@@ -94,9 +94,11 @@ namespace CountWordsApp
             }
             return res;
         }
-        readonly static EventWaitHandle waiterForStats = new AutoResetEvent(false);
+        readonly static EventWaitHandle waiterForStats = new ManualResetEvent(false);
         readonly static EventWaitHandle waiterForAgg = new AutoResetEvent(false);
-        readonly static EventWaitHandle finishedWorking = new AutoResetEvent(false);
+        readonly static EventWaitHandle finishedWorking = new ManualResetEvent(false);
+        static Semaphore semForStats;
+
 
         static Queue<StringAndFile> _queueForStrings ;
         static readonly Queue<Dictionary<string, int>> _queueForStats=new Queue<Dictionary<string, int>>();
@@ -104,7 +106,7 @@ namespace CountWordsApp
 
         readonly static Regex rxsepar = new Regex( @"[^\s\t]+", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.IgnorePatternWhitespace );
 
-
+        static int _lines_GLOBAL_counter = 0;
         static void ReadFiles()
         {
             foreach (var fn in allFiles)
@@ -116,7 +118,7 @@ namespace CountWordsApp
                         if (options.Verbose)
                             Console.WriteLine("Processing " + fn);
                         var fnDEBUG = Path.GetFileName(fn);
-                        int linCnt = 1;
+int linCnt = 1;
                         using (var streamReader = new StreamReader(fileStream))
                         {
                             do
@@ -131,8 +133,9 @@ namespace CountWordsApp
                                         if (string.IsNullOrWhiteSpace(line))
                                             continue;
                                         var o = new StringAndFile() { Str = line, File = fnDEBUG, Line = linCnt };
-                                        linCnt++;
-//Debug.WriteLine("Line: " + o.Line + " File " + o.File);
+linCnt++;
+_lines_GLOBAL_counter++;
+Debug.WriteLine("Line: " + o.Line + " File " + o.File);
                                         _queueForStrings.Enqueue(o);
                                         if (_queueForStrings.Count == options.QueueSize)
                                             break;
@@ -155,30 +158,31 @@ namespace CountWordsApp
                 Console.WriteLine("IO ops - done");
 
             finishedWorking.Set();
-            //weAreDone.Set();
-            //waiterForStats.Set();
-            //waiterForAgg.Set();
         }
 
         static void CalcStats()
         {
-            //int cnt = 0;
+int local_cnt = 0;
             while (true)
             {
-                int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForStats, finishedWorking });
-                if (1 == who)
-                    return;
+                //int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForStats, finishedWorking });
+                //if (1 == who)
+                //    return;
+                waiterForStats.WaitOne();
                 List<string> tmp = new List<string>(options.BufferSize);
                 Dictionary<string, int> wordCount = options.IgnoreCase ?
                     new Dictionary<string, int>(options.BufferSize, StringComparer.InvariantCultureIgnoreCase)
                     : new Dictionary<string, int>(options.BufferSize, StringComparer.InvariantCulture);
                 lock (_forLockingInp)
                 {
+                    if (_queueForStrings.Count == 0)
+                        break;
                     for (int j = 0; j < options.BufferSize && _queueForStrings.Count > 0; j++)
                     {
                         var s = _queueForStrings.Dequeue();
-//Debug.WriteLine(Thread.CurrentThread.Name + "\t" +s.Line + "\t" + s.File);
-                        tmp.Add(s.Str );
+                        tmp.Add(s.Str);
+Debug.WriteLine(Thread.CurrentThread.Name + "\t" +s.Line + "\t" + s.File);
+local_cnt++;
                     }
                 }
                 #region Calculate local stats
@@ -214,20 +218,19 @@ namespace CountWordsApp
                 }
                 waiterForAgg.Set();
             }
+Console.WriteLine(string.Format(Thread.CurrentThread.Name + " local lines: {0}", local_cnt));
         }
 
         static void CalcAgg()
         {
-            //int cnt = 0;
+int local_cnt = 0;
             while (true)
             {
                 int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForAgg, finishedWorking });
 
-                //Debug.WriteLine(Thread.CurrentThread.Name + " Local counter " + cnt);
                 Dictionary<string, int> wordCountDict = null;
                 lock (_forLockingStats)
                 {
-//Debug.WriteLine(Thread.CurrentThread.Name + " Local counter " + cnt + " Global dict " + _allWordsInAllFiles.Count);
                     if (_queueForStats.Count > 0)
                         wordCountDict = _queueForStats.Dequeue();
                     else
@@ -235,11 +238,15 @@ namespace CountWordsApp
                     {
                         if (options.Verbose)
                             Console.WriteLine("Aggregation - DONE");
+Console.WriteLine(string.Format("AGG local # of sets: {0}", local_cnt));
+Debug.WriteLine(string.Format("AGG local # of sets: {0}", local_cnt));
+                        waiterForAgg.Reset();
                         return;
                     }
                 }
                 if (wordCountDict != null)
                 {
+local_cnt++;
                     foreach (var kv in wordCountDict.Keys)
                     {
                         int cnt2 = wordCountDict[kv];
@@ -258,8 +265,9 @@ namespace CountWordsApp
         {
             if (CommandLine.Parser.Default.ParseArguments(args, options))
             {
-                int cpus = 8;// Math.Min(Environment.ProcessorCount - 2, 1);
+                int cpus = 2;// Math.Min(Environment.ProcessorCount - 2, 1);
                 List<Thread> calcThreads = new List<Thread>(cpus);
+                semForStats = new Semaphore(cpus, cpus);
                 Thread threadFOrIO;
                 Thread threadFOrAggregation;
 
@@ -303,21 +311,20 @@ namespace CountWordsApp
                        });
                     threadFOrAggregation.Start();
 
-                    Console.WriteLine("Press ENTER to view results & exit...");
-                    Console.ReadLine();
-                    finishedWorking.Set();
+                    //Console.WriteLine("Press ENTER to view results & exit...");
+                    //Console.ReadLine();
+                    //finishedWorking.Set();
                     threadFOrIO.Join();
+                    waiterForStats.Set ();
                     calcThreads.ForEach((t) => t.Join());
                     threadFOrAggregation.Join();
-                    //finishedWorking.Close();
-                    //waiterForStats.Close();
-                    //waiterForAgg.Close();
 
 
                     var r = GetTopWords(10, _allWordsInAllFiles);
                     Console.WriteLine("========= RESULTS =========");
                     r.ForEach((v) => Console.WriteLine(v.Item1 + " " + v.Item2));
-                    //r.ForEach((v) => Debug.WriteLine(v.Item1 + " " + v.Item2));
+                    r.ForEach((v) => Debug.WriteLine(v.Item1 + " " + v.Item2));
+Console.WriteLine(string.Format ("LINES: {0} {1}" , _lines_GLOBAL_counter, _queueForStrings.Count));
                 }
                 catch (Exception ex)
                 {
