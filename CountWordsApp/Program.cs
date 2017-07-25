@@ -95,10 +95,9 @@ namespace CountWordsApp
             return res;
         }
         readonly static EventWaitHandle waiterForStats = new ManualResetEvent(false);
-        readonly static EventWaitHandle waiterForAgg = new AutoResetEvent(false);
-        readonly static EventWaitHandle finishedWorking = new ManualResetEvent(false);
-        //readonly static EventWaitHandle finishedWorkingStats = new ManualResetEvent(false);
-        static Semaphore semForStats;
+        readonly static EventWaitHandle waiterForAgg = new ManualResetEvent(false);
+        readonly static EventWaitHandle finishedWorkingStats = new ManualResetEvent(false);
+        static CountdownEvent _semForStats;
 
 
         static Queue<StringAndFile> _queueForStrings ;
@@ -128,7 +127,10 @@ int linCnt = 1;
                                 lock (_forLockingInp)
                                 {
                                     if (_queueForStrings.Count == options.QueueSize)
+                                    {
+                                        waiterForStats.Set();
                                         continue;
+                                    }
                                     while ((line = streamReader.ReadLine()) != null)
                                     {
                                         if (string.IsNullOrWhiteSpace(line))
@@ -136,7 +138,7 @@ int linCnt = 1;
                                         var o = new StringAndFile() { Str = line, File = fnDEBUG, Line = linCnt };
 linCnt++;
 _lines_GLOBAL_counter++;
-Debug.WriteLine("Line: " + o.Line + " File " + o.File);
+//Debug.WriteLine("Line: " + o.Line + " File " + o.File);
                                         _queueForStrings.Enqueue(o);
                                         if (_queueForStrings.Count == options.QueueSize)
                                             break;
@@ -157,19 +159,16 @@ Debug.WriteLine("Line: " + o.Line + " File " + o.File);
             }
             if (options.Verbose)
                 Console.WriteLine("IO ops - done");
-            finishedWorking.Set();
-            _done=true;
+            finishedWorkingStats.Set();
         }
 
-
-        static volatile bool _done = false;
 
         static void CalcStats()
         {
 int local_cnt = 0;
             while (true)
             {
-                int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForStats, finishedWorking });
+                int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForStats, finishedWorkingStats });
                 //waiterForStats.WaitOne();
                 List<string> tmp = new List<string>(options.BufferSize);
                 Dictionary<string, int> wordCount = options.IgnoreCase ?
@@ -179,13 +178,12 @@ int local_cnt = 0;
                 {
                     if (_queueForStrings.Count == 0 && 1 == who)
                         break;
-                    if (_queueForStrings.Count == 0 && _done)
-                        break;
+                    var ss= string.Format("{0}\t_queueForStrings.Count: {1}", Thread.CurrentThread.Name, _queueForStrings.Count);
+Debug.WriteLine(ss);
                     for (int j = 0; j < options.BufferSize && _queueForStrings.Count > 0; j++)
                     {
                         var s = _queueForStrings.Dequeue();
                         tmp.Add(s.Str);
-Debug.WriteLine(Thread.CurrentThread.Name + "\t" +s.Line + "\t" + s.File);
 local_cnt++;
                     }
                 }
@@ -216,13 +214,21 @@ local_cnt++;
                     }
                 }
                 #endregion
-                lock (_forLockingStats)
+
+
+                if (wordCount.Keys.Count > 0)
                 {
-                    _queueForStats.Enqueue(wordCount);
+                    lock (_forLockingStats)
+                    {
+                        _queueForStats.Enqueue(wordCount);
+                    }
                 }
+                waiterForStats.Reset();
                 waiterForAgg.Set();
             }
-var sss = string.Format(Thread.CurrentThread.Name + " local lines: {0}", local_cnt);
+            var q = _semForStats.Signal();
+
+            var sss = string.Format("{0} local lines: {1}", Thread.CurrentThread.Name, local_cnt);
 Debug.WriteLine(sss);
 Console.WriteLine(sss);
         }
@@ -232,27 +238,33 @@ Console.WriteLine(sss);
 int local_cnt = 0;
             while (true)
             {
-                int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForAgg, finishedWorking });
+                int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForAgg, _semForStats.WaitHandle, finishedWorkingStats });
 
                 Dictionary<string, int> wordCountDict = null;
                 lock (_forLockingStats)
                 {
+                    waiterForAgg.Reset();
                     if (_queueForStats.Count > 0)
                         wordCountDict = _queueForStats.Dequeue();
                     else
-                    if (1 == who)
+                    if (_queueForStats.Count == 0 && 1 == who)
                     {
+                        waiterForStats.Reset();
+//                        waiterForStats.Set();
+
                         if (options.Verbose)
                             Console.WriteLine("Aggregation - DONE");
-Console.WriteLine(string.Format("AGG local # of sets: {0}", local_cnt));
-Debug.WriteLine(string.Format("AGG local # of sets: {0}", local_cnt));
-                        //waiterForAgg.Reset();
-                        return;
+var ss = string.Format("AGG local # of sets: {0}", local_cnt);
+Console.WriteLine(ss);
+Debug.WriteLine(ss);
+                        break;
                     }
                 }
                 if (wordCountDict != null)
                 {
-Debug.WriteLine(string.Format("AGG # wordCountDict: {0}", wordCountDict.Keys.Count));
+var ss2 = string.Format("AGG # wordCountDict: {0}", wordCountDict.Keys.Count);
+Console.WriteLine(ss2);
+Debug.WriteLine(ss2);
 local_cnt++;
                     foreach (var kv in wordCountDict.Keys)
                     {
@@ -274,7 +286,7 @@ local_cnt++;
             {
                 int cpus = 2;// Math.Min(Environment.ProcessorCount - 2, 1);
                 List<Thread> calcThreads = new List<Thread>(cpus);
-                semForStats = new Semaphore(cpus, cpus);
+                _semForStats = new CountdownEvent(cpus);
                 Thread threadFOrIO;
                 Thread threadFOrAggregation;
 
@@ -324,7 +336,7 @@ local_cnt++;
                     threadFOrIO.Join();
 
                     //finishedWorking.Set();
-                    //waiterForStats.Set();
+                    finishedWorkingStats.Set();
 
                     calcThreads.ForEach((t) => t.Join());
                     threadFOrAggregation.Join();
