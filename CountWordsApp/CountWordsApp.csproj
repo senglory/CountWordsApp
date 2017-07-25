@@ -59,6 +59,21 @@
     <None Include="CountWordsApp.ruleset" />
     <None Include="packages.config" />
   </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <Content Include="TESTDATA\dd_vcredistMSI0001.txt" />
+    <Content Include="TESTDATA\dd_vcredistMSI0056.txt" />
+    <Content Include="TESTDATA\dd_vcredistMSI0B87.txt" />
+    <Content Include="TESTDATA\dd_vcredistMSI0BFD.txt" />
+    <Content Include="TESTDATA\dd_vcredistMSI0CC7.txt" />
+    <Content Include="TESTDATA\dd_vcredistMSI151F.txt" />
+    <Content Include="TESTDATA\dd_vcredistMSI1BED.txt" />
+    <Content Include="TESTDATA\dd_vcredistMSI6650.txt" />
+    <Content Include="TESTDATA\dd_vcredistMSI6C17.txt" />
+    <Content Include="TESTDATA\dd_vcredistMSI781E.txt" />
+    <Content Include="TESTDATA\dd_vstor40_x64UI3B70.txt" />
+    <Content Include="TESTDATA\dd_vstor40_x64UI79DE.txt" />
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
        Other similar extension points exist, see Microsoft.Common.targets.

@@ -97,6 +97,7 @@ namespace CountWordsApp
         readonly static EventWaitHandle waiterForStats = new ManualResetEvent(false);
         readonly static EventWaitHandle waiterForAgg = new AutoResetEvent(false);
         readonly static EventWaitHandle finishedWorking = new ManualResetEvent(false);
+        //readonly static EventWaitHandle finishedWorkingStats = new ManualResetEvent(false);
         static Semaphore semForStats;
 
 
@@ -156,26 +157,29 @@ Debug.WriteLine("Line: " + o.Line + " File " + o.File);
             }
             if (options.Verbose)
                 Console.WriteLine("IO ops - done");
-
             finishedWorking.Set();
+            _done=true;
         }
+
+
+        static volatile bool _done = false;
 
         static void CalcStats()
         {
 int local_cnt = 0;
             while (true)
             {
-                //int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForStats, finishedWorking });
-                //if (1 == who)
-                //    return;
-                waiterForStats.WaitOne();
+                int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForStats, finishedWorking });
+                //waiterForStats.WaitOne();
                 List<string> tmp = new List<string>(options.BufferSize);
                 Dictionary<string, int> wordCount = options.IgnoreCase ?
                     new Dictionary<string, int>(options.BufferSize, StringComparer.InvariantCultureIgnoreCase)
                     : new Dictionary<string, int>(options.BufferSize, StringComparer.InvariantCulture);
                 lock (_forLockingInp)
                 {
-                    if (_queueForStrings.Count == 0)
+                    if (_queueForStrings.Count == 0 && 1 == who)
+                        break;
+                    if (_queueForStrings.Count == 0 && _done)
                         break;
                     for (int j = 0; j < options.BufferSize && _queueForStrings.Count > 0; j++)
                     {
@@ -218,7 +222,9 @@ local_cnt++;
                 }
                 waiterForAgg.Set();
             }
-Console.WriteLine(string.Format(Thread.CurrentThread.Name + " local lines: {0}", local_cnt));
+var sss = string.Format(Thread.CurrentThread.Name + " local lines: {0}", local_cnt);
+Debug.WriteLine(sss);
+Console.WriteLine(sss);
         }
 
         static void CalcAgg()
@@ -240,12 +246,13 @@ int local_cnt = 0;
                             Console.WriteLine("Aggregation - DONE");
 Console.WriteLine(string.Format("AGG local # of sets: {0}", local_cnt));
 Debug.WriteLine(string.Format("AGG local # of sets: {0}", local_cnt));
-                        waiterForAgg.Reset();
+                        //waiterForAgg.Reset();
                         return;
                     }
                 }
                 if (wordCountDict != null)
                 {
+Debug.WriteLine(string.Format("AGG # wordCountDict: {0}", wordCountDict.Keys.Count));
 local_cnt++;
                     foreach (var kv in wordCountDict.Keys)
                     {
@@ -315,7 +322,10 @@ local_cnt++;
                     //Console.ReadLine();
                     //finishedWorking.Set();
                     threadFOrIO.Join();
-                    waiterForStats.Set ();
+
+                    //finishedWorking.Set();
+                    //waiterForStats.Set();
+
                     calcThreads.ForEach((t) => t.Join());
                     threadFOrAggregation.Join();
 
