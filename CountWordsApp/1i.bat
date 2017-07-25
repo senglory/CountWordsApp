@@ -1,0 +1,1 @@
+bin\Debug\CountWordsApp.exe -v -q 1000 -b 10000  -l 3 -p  .\TESTDATA

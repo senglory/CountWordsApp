@@ -29,10 +29,6 @@ namespace CountWordsApp
           HelpText = "Path to directory. Must be enclosed with double quotas.")]
         public string Path { get; set; }
 
-        [Option('i', "ignore", DefaultValue = false,
-          HelpText = "Ignore case while searching words")]
-        public bool IgnoreCase { get; set; }
-
         [Option('v', "verbose", DefaultValue = false,
           HelpText = "Verbose output.")]
         public bool Verbose { get; set; }
@@ -44,37 +40,20 @@ namespace CountWordsApp
         }
     }
 
-    class StringAndFile
-    {
-        public string Str;
-        public string File;
-        public int Line;
-    }
 
     class Program
     {
+        public readonly static Options options = new Options();
+
         public readonly static object _forLockingInp = new object();
         public readonly static object _forLockingStats = new object();
-        public readonly static Options options = new Options();
         public static string[] allFiles;
 
         public static List<Tuple<string, int>> GetTopWords(int size, Dictionary<string, int> allWordsInAllFiles)
         {
             var res = new List<Tuple<string, int>>(size);
             var tmpls = allWordsInAllFiles.ToList();
-            //var comparer = Comparer<KeyValuePair<string, int>>.Create((x, y) => x.Value.CompareTo(y.Value));
-            // for .NET >= 4.5 
-            var comparer = Comparer<KeyValuePair<string, int>>.Create((x, y) => y.Value.CompareTo(x.Value));
-            //var comparer = new Comparer<KeyValuePair<string, int>>();// .Create((x, y) => y.Value.CompareTo(x.Value));
-
-
-            tmpls.Sort(comparer);
-            var tt = tmpls.Take(size);
-            foreach (var v in tt)
-            {
-                res.Add(new Tuple<string, int>(v.Key, v.Value));
-            }
-            return res;
+            var comparer = Comparer<KeyValuePair<string, int>>.Create((x, y) => x.Value.CompareTo(y.Value));
 
             var highestIndices = new List<KeyValuePair<string, int>>(size);
             foreach (var v in tmpls)
@@ -94,19 +73,19 @@ namespace CountWordsApp
             }
             return res;
         }
+
         readonly static EventWaitHandle waiterForStats = new ManualResetEvent(false);
         readonly static EventWaitHandle waiterForAgg = new ManualResetEvent(false);
-        readonly static EventWaitHandle finishedWorkingStats = new ManualResetEvent(false);
-        static CountdownEvent _semForStats;
+        readonly static EventWaitHandle _finishedWorking = new ManualResetEvent(false);
+        static CountdownEvent _countdownForStats;
 
 
-        static Queue<StringAndFile> _queueForStrings ;
+        static Queue<string> _queueForStrings ;
         static readonly Queue<Dictionary<string, int>> _queueForStats=new Queue<Dictionary<string, int>>();
-        static Dictionary<string, int> _allWordsInAllFiles;
+        static Dictionary<string, int> _allWordsInAllFiles = new Dictionary<string, int>(StringComparer.InvariantCultureIgnoreCase);
 
         readonly static Regex rxsepar = new Regex( @"[^\s\t]+", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.IgnorePatternWhitespace );
 
-        static int _lines_GLOBAL_counter = 0;
         static void ReadFiles()
         {
             foreach (var fn in allFiles)
@@ -117,29 +96,26 @@ namespace CountWordsApp
                     {
                         if (options.Verbose)
                             Console.WriteLine("Processing " + fn);
-                        var fnDEBUG = Path.GetFileName(fn);
-int linCnt = 1;
                         using (var streamReader = new StreamReader(fileStream))
                         {
                             do
                             {
-                                string line;
                                 lock (_forLockingInp)
                                 {
+                                    // buffer is full - run statistics calculation
                                     if (_queueForStrings.Count == options.QueueSize)
                                     {
                                         waiterForStats.Set();
                                         continue;
                                     }
+                                    string line;
+                                    // populate buffer until there's a room 
                                     while ((line = streamReader.ReadLine()) != null)
                                     {
+                                        // skip empty lines
                                         if (string.IsNullOrWhiteSpace(line))
                                             continue;
-                                        var o = new StringAndFile() { Str = line, File = fnDEBUG, Line = linCnt };
-linCnt++;
-_lines_GLOBAL_counter++;
-//Debug.WriteLine("Line: " + o.Line + " File " + o.File);
-                                        _queueForStrings.Enqueue(o);
+                                        _queueForStrings.Enqueue(line);
                                         if (_queueForStrings.Count == options.QueueSize)
                                             break;
                                     }
@@ -159,32 +135,26 @@ _lines_GLOBAL_counter++;
             }
             if (options.Verbose)
                 Console.WriteLine("IO ops - done");
-            finishedWorkingStats.Set();
+            _finishedWorking.Set();
         }
 
 
         static void CalcStats()
         {
-int local_cnt = 0;
             while (true)
             {
-                int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForStats, finishedWorkingStats });
-                //waiterForStats.WaitOne();
+                int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForStats, _finishedWorking });
                 List<string> tmp = new List<string>(options.BufferSize);
-                Dictionary<string, int> wordCount = options.IgnoreCase ?
-                    new Dictionary<string, int>(options.BufferSize, StringComparer.InvariantCultureIgnoreCase)
-                    : new Dictionary<string, int>(options.BufferSize, StringComparer.InvariantCulture);
+                Dictionary<string, int> wordCount = new Dictionary<string, int>(options.BufferSize, StringComparer.InvariantCultureIgnoreCase);
                 lock (_forLockingInp)
                 {
+                    // no more data and we're requested to finish - quit
                     if (_queueForStrings.Count == 0 && 1 == who)
                         break;
-                    var ss= string.Format("{0}\t_queueForStrings.Count: {1}", Thread.CurrentThread.Name, _queueForStrings.Count);
-Debug.WriteLine(ss);
                     for (int j = 0; j < options.BufferSize && _queueForStrings.Count > 0; j++)
                     {
                         var s = _queueForStrings.Dequeue();
-                        tmp.Add(s.Str);
-local_cnt++;
+                        tmp.Add(s);
                     }
                 }
                 #region Calculate local stats
@@ -215,7 +185,6 @@ local_cnt++;
                 }
                 #endregion
 
-
                 if (wordCount.Keys.Count > 0)
                 {
                     lock (_forLockingStats)
@@ -223,49 +192,39 @@ local_cnt++;
                         _queueForStats.Enqueue(wordCount);
                     }
                 }
+                // pulse aggregation
                 waiterForStats.Reset();
                 waiterForAgg.Set();
             }
-            var q = _semForStats.Signal();
-
-            var sss = string.Format("{0} local lines: {1}", Thread.CurrentThread.Name, local_cnt);
-Debug.WriteLine(sss);
-Console.WriteLine(sss);
+            _countdownForStats.Signal();
         }
 
         static void CalcAgg()
         {
-int local_cnt = 0;
             while (true)
             {
-                int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForAgg, _semForStats.WaitHandle, finishedWorkingStats });
-
+                int who = WaitHandle.WaitAny(new WaitHandle[] { waiterForAgg, _countdownForStats.WaitHandle });
+                // pulse aggregation
+                if (0 == who )
+                    waiterForAgg.Reset();
                 Dictionary<string, int> wordCountDict = null;
                 lock (_forLockingStats)
                 {
-                    waiterForAgg.Reset();
                     if (_queueForStats.Count > 0)
                         wordCountDict = _queueForStats.Dequeue();
                     else
                     if (_queueForStats.Count == 0 && 1 == who)
                     {
+                        // shutdown statistics calculators
                         waiterForStats.Reset();
-//                        waiterForStats.Set();
 
                         if (options.Verbose)
                             Console.WriteLine("Aggregation - DONE");
-var ss = string.Format("AGG local # of sets: {0}", local_cnt);
-Console.WriteLine(ss);
-Debug.WriteLine(ss);
                         break;
                     }
                 }
                 if (wordCountDict != null)
                 {
-var ss2 = string.Format("AGG # wordCountDict: {0}", wordCountDict.Keys.Count);
-Console.WriteLine(ss2);
-Debug.WriteLine(ss2);
-local_cnt++;
                     foreach (var kv in wordCountDict.Keys)
                     {
                         int cnt2 = wordCountDict[kv];
@@ -282,77 +241,64 @@ local_cnt++;
 
         static void Main(string[] args)
         {
-            if (CommandLine.Parser.Default.ParseArguments(args, options))
+            if (!CommandLine.Parser.Default.ParseArguments(args, options))
             {
-                int cpus = 2;// Math.Min(Environment.ProcessorCount - 2, 1);
-                List<Thread> calcThreads = new List<Thread>(cpus);
-                _semForStats = new CountdownEvent(cpus);
-                Thread threadFOrIO;
-                Thread threadFOrAggregation;
+                return;
+            }
+            int cpus = Math.Min(Environment.ProcessorCount - 2, 1);
+            List<Thread> calcThreads = new List<Thread>(cpus);
+            _countdownForStats = new CountdownEvent(cpus);
+            Thread threadFOrIO;
+            Thread threadFOrAggregation;
 
-                if (options.IgnoreCase)
-                    _allWordsInAllFiles = new Dictionary<string, int>(StringComparer.InvariantCultureIgnoreCase);
-                else
-                    _allWordsInAllFiles = new Dictionary<string, int>(StringComparer.InvariantCulture);
 
-                // quick workaround for bug in CommandLine
-                var p = options.Path;
-                if (options.Path.EndsWith("\""))
-                    p = p.Substring(0, p.Length - 1) + "\\";
-                try
+            // quick workaround for bug in CommandLine
+            var p = options.Path;
+            if (options.Path.EndsWith("\""))
+                p = p.Substring(0, p.Length - 1) + "\\";
+            try
+            {
+                allFiles = Directory.GetFiles(p, "*.txt", SearchOption.TopDirectoryOnly);
+
+                if (options.Verbose)
+                    Console.WriteLine("Number of files: {0}", allFiles.Length);
+                if (options.Verbose)
                 {
-                    allFiles = Directory.GetFiles(p, "*.txt", SearchOption.TopDirectoryOnly);
-
-                    if (options.Verbose)
-                        Console.WriteLine("Number of files: {0}", allFiles.Length);
-                    if (options.Verbose)
-                    {
-                        Console.WriteLine("Number of CPUs: {0}", cpus);
-                        Console.WriteLine("Statistics will be prepared by {0} threads", cpus);
-                    }
-
-                    _queueForStrings = new Queue<StringAndFile>(options.QueueSize);
-                    threadFOrIO = new Thread(ReadFiles);
-
-                    for (int i = 0; i < cpus; i++)
-                    {
-                        var t = new Thread( CalcStats)
-                        { Name = "CalcTread " + i.ToString() };
-                        calcThreads.Add(t);
-                    }
-
-                    threadFOrAggregation = new Thread(CalcAgg) { Name = "AGG"};
-
-                    threadFOrIO.Start();
-                    calcThreads.ForEach((t) =>
-                       {
-                           t.Start();
-                       });
-                    threadFOrAggregation.Start();
-
-                    //Console.WriteLine("Press ENTER to view results & exit...");
-                    //Console.ReadLine();
-                    //finishedWorking.Set();
-                    threadFOrIO.Join();
-
-                    //finishedWorking.Set();
-                    finishedWorkingStats.Set();
-
-                    calcThreads.ForEach((t) => t.Join());
-                    threadFOrAggregation.Join();
-
-
-                    var r = GetTopWords(10, _allWordsInAllFiles);
-                    Console.WriteLine("========= RESULTS =========");
-                    r.ForEach((v) => Console.WriteLine(v.Item1 + " " + v.Item2));
-                    r.ForEach((v) => Debug.WriteLine(v.Item1 + " " + v.Item2));
-Console.WriteLine(string.Format ("LINES: {0} {1}" , _lines_GLOBAL_counter, _queueForStrings.Count));
+                    Console.WriteLine("Number of CPUs: {0}", cpus);
+                    Console.WriteLine("Statistics will be prepared by {0} threads", cpus);
                 }
-                catch (Exception ex)
+
+                _queueForStrings = new Queue<string>(options.QueueSize);
+                threadFOrIO = new Thread(ReadFiles);
+
+                for (int i = 0; i < cpus; i++)
                 {
-                    Console.WriteLine(ex.Message);
-                    return;
+                    var t = new Thread( CalcStats);
+                    calcThreads.Add(t);
                 }
+
+                threadFOrAggregation = new Thread(CalcAgg);
+
+                threadFOrIO.Start();
+                calcThreads.ForEach((t) =>
+                    {
+                        t.Start();
+                    });
+                threadFOrAggregation.Start();
+
+                // waiting for finishing
+                threadFOrIO.Join();
+                calcThreads.ForEach((t) => t.Join());
+                threadFOrAggregation.Join();
+
+                var r = GetTopWords(10, _allWordsInAllFiles);
+                Console.WriteLine("========= RESULTS =========");
+                r.ForEach((v) => Console.WriteLine(v.Item1 + " " + v.Item2));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+                return;
             }
         }
     }
